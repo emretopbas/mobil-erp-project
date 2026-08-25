@@ -3,6 +3,7 @@
   "main": "expo-router/entry",
   "version": "1.0.0",
   "dependencies": {
+    "@expo-google-fonts/archivo": "^0.4.2",
     "@expo/ui": "~57.0.13",
     "expo": "~57.0.16",
     "expo-constants": "~57.0.14",
