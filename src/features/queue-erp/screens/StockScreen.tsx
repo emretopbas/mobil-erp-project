@@ -1,69 +1,95 @@
+import { useCallback, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { QueueAppApi } from '../useQueueApp';
-import { dim, dimmer, divider, fontHeading, fontMono, ground, ink } from '../theme';
+import { BodyText, color, font } from '@/design-system';
+import { ProductStockGroup } from '@/features/stock/ProductStockGroup';
+import { isLowStock, type StockVariantRow } from '@/lib/stockMatrix';
+import type { Product } from '@/models';
+import { hasPermission, productService, stockService, type ActorContext } from '@/services';
+import { useReloadOnMount } from '@/hooks/use-reload';
+import type { StockFilter } from '../useQueueApp';
 
-export function StockScreen({ data }: { data: QueueAppApi['stockScreen'] }) {
-  const { stockFilters, visibleStock, stockEmpty, clearStockFilter } = data;
+const FILTERS: StockFilter[] = ['Tümü', 'Düşük stok'];
+
+interface ProductGroup {
+  product: Product;
+  rows: StockVariantRow[];
+}
+
+/** Screen 4 — ürün başına kartezyen (2 eksenli) tablo veya düz liste
+ * (`ProductStockGroup`, product feedback: "ürün varyantlarını tek tek
+ * göstermektense bir kartezyen tablo daha hoş olabilir"). Mockup'ın üçüncü
+ * filtresi ("Üretimde") hâlâ yok — stok üretim durumunu takip etmiyor. */
+export function StockScreen({ ctx }: { ctx: ActorContext }) {
+  const [groups, setGroups] = useState<ProductGroup[] | null>(null);
+  const [filter, setFilter] = useState<StockFilter>('Tümü');
+
+  const canWrite = hasPermission(ctx.employee.role, 'stockMovement', 'create');
+
+  const reload = useCallback(async () => {
+    const products = await productService.list(ctx);
+    const next: ProductGroup[] = [];
+    for (const product of products) {
+      const variants = await productService.listVariantsWithAttributes(ctx, product.id);
+      const rows: StockVariantRow[] = [];
+      for (const { variant, axes } of variants) {
+        rows.push({ variant, axes, level: await stockService.getLevel(ctx, variant.id) });
+      }
+      next.push({ product, rows });
+    }
+    setGroups(next);
+  }, [ctx]);
+
+  useReloadOnMount(reload);
+
+  const filteredGroups = (groups ?? [])
+    .map((g) => ({
+      product: g.product,
+      rows: filter === 'Tümü' ? g.rows : g.rows.filter((r) => isLowStock(r.level?.on_hand ?? 0, r.level?.low_stock_threshold ?? 0)),
+    }))
+    .filter((g) => g.rows.length > 0);
+
+  const totalRows = (groups ?? []).reduce((n, g) => n + g.rows.length, 0);
 
   return (
     <View>
       <View style={styles.filterRow}>
-        {stockFilters.map((f) => (
-          <Pressable key={f.label} onPress={f.select} style={[styles.filterBtn, { backgroundColor: f.bg, borderColor: f.border }]}>
-            <Text style={[styles.filterText, { color: f.fg }]}>{f.label}</Text>
+        {FILTERS.map((f) => (
+          <Pressable
+            key={f}
+            onPress={() => setFilter(f)}
+            style={[styles.filterBtn, { backgroundColor: filter === f ? color.text : 'transparent', borderColor: color.text }]}>
+            <Text style={{ color: filter === f ? color.bg : color.text, fontSize: 12, letterSpacing: 0.5, textTransform: 'uppercase', fontWeight: '700' }}>{f}</Text>
           </Pressable>
         ))}
       </View>
 
-      {stockEmpty ? (
+      {groups === null ? (
+        <View style={styles.empty}>
+          <BodyText muted>Yükleniyor…</BodyText>
+        </View>
+      ) : filteredGroups.length === 0 ? (
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>Eşleşen{'\n'}kalem yok.</Text>
-          <Text style={styles.emptyBody}>Bu filtrede gösterilecek stok kalemi bulunmuyor.</Text>
-          <Pressable onPress={clearStockFilter} style={styles.emptyBtn}>
-            <Text style={styles.emptyBtnText}>Filtreyi temizle</Text>
-          </Pressable>
+          <BodyText muted>{totalRows === 0 ? 'Henüz varyant yok — önce Ürünler ekranından ekleyin.' : 'Bu filtrede gösterilecek stok kalemi bulunmuyor.'}</BodyText>
         </View>
       ) : (
-        visibleStock.map((item) => (
-          <View key={item.sku} style={styles.row}>
-            <View style={styles.rowTop}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.name}>{item.name}</Text>
-                <Text style={styles.meta}>{item.sku} · {item.stage}</Text>
-              </View>
-              <Text style={[styles.qty, { color: item.qtyFg }]}>{item.qty}</Text>
-            </View>
-            <View style={styles.cells}>
-              {item.cells.map((c, i) => (
-                <View key={i} style={[styles.cell, { backgroundColor: c.bg }]} />
-              ))}
-            </View>
-            {!!item.warn && <Text style={styles.warn}>{item.warn}</Text>}
-          </View>
-        ))
+        <View style={styles.list}>
+          {filteredGroups.map((g) => (
+            <ProductStockGroup key={g.product.id} ctx={ctx} product={g.product} rows={g.rows} canWrite={canWrite} onChanged={() => void reload()} />
+          ))}
+        </View>
       )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  filterRow: { padding: 13, paddingHorizontal: 18, borderBottomWidth: 2, borderBottomColor: ink, flexDirection: 'row', gap: 10 },
+  filterRow: { padding: 13, paddingHorizontal: 18, borderBottomWidth: 2, borderBottomColor: color.text, flexDirection: 'row', gap: 10 },
   filterBtn: { minHeight: 40, paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center', borderWidth: 2 },
-  filterText: { fontSize: 12, letterSpacing: 0.5, textTransform: 'uppercase', fontWeight: '700' },
 
-  empty: { padding: 18, paddingVertical: 38 },
-  emptyTitle: { fontSize: 30, lineHeight: 32, fontFamily: fontHeading, color: ink },
-  emptyBody: { fontSize: 13, lineHeight: 19, color: dim, marginTop: 12, marginBottom: 16 },
-  emptyBtn: { minHeight: 46, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: ink, alignSelf: 'flex-start' },
-  emptyBtnText: { fontFamily: fontHeading, fontSize: 13.5, color: ink },
+  empty: { padding: 18, paddingVertical: 38, gap: 12 },
+  emptyTitle: { fontSize: 30, lineHeight: 32, fontFamily: font.heading, color: color.text },
 
-  row: { padding: 14, paddingHorizontal: 18, borderBottomWidth: 1, borderBottomColor: divider },
-  rowTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 },
-  name: { fontSize: 14.5, fontWeight: '700', color: ink },
-  meta: { fontSize: 11, fontFamily: fontMono, color: dimmer, marginTop: 2 },
-  qty: { fontFamily: fontMono, fontSize: 16, fontWeight: '700' },
-  cells: { marginTop: 9, flexDirection: 'row', gap: 2, height: 8 },
-  cell: { flex: 1, height: 8 },
-  warn: { marginTop: 9, fontSize: 12, color: '#ff6a52' },
+  list: { padding: 18, gap: 22 },
 });

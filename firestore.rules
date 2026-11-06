@@ -1,0 +1,139 @@
+rules_version = '2';
+
+// CLAUDE.md §2: operational data (orders, stock, cari, tasks, finance) never
+// lives in Firestore — that is SQLite/Turso. Everything here is metadata
+// written about once per employee: business identity, membership, invites,
+// the backup encryption key and a new-device hint.
+//
+// The ONLY proof of membership is businesses/{businessId}/members/{uid}.
+// employee_business_map is a hint the user writes about themselves and is
+// never consulted for access.
+//
+// Deploy: firebase deploy --only firestore:rules,storage:rules
+// Only after an app build that writes membership (MembershipService.ts) is on
+// every device — otherwise no business has a members document and backups stop.
+// Tests: npm run test:rules (Firebase emulator).
+service cloud.firestore {
+  match /databases/{db}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function myEmail() { return request.auth.token.email.lower(); }
+    function emailVerified() { return request.auth.token.email_verified == true; }
+
+    function memberPath(businessId, memberUid) {
+      return /databases/$(db)/documents/businesses/$(businessId)/members/$(memberUid);
+    }
+    function isMember(businessId) {
+      return signedIn() && exists(memberPath(businessId, uid()));
+    }
+    function myRole(businessId) {
+      return get(memberPath(businessId, uid())).data.role;
+    }
+    function isAdmin(businessId) {
+      return isMember(businessId) && myRole(businessId) in ['owner', 'manager'];
+    }
+    function isOwner(businessId) {
+      return isMember(businessId) && myRole(businessId) == 'owner';
+    }
+    function invitableRole(role) {
+      return role in ['manager', 'production', 'sales', 'viewer'];
+    }
+
+    match /businesses/{businessId} {
+      allow read: if isMember(businessId);
+      // The business document and its founder's owner membership are written
+      // in ONE batch — a business can never exist without its owner member.
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['owner_uid', 'name', 'created_at'])
+        && request.resource.data.owner_uid == uid()
+        && request.resource.data.name is string
+        && existsAfter(memberPath(businessId, uid()));
+      allow update: if isOwner(businessId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name']);
+      allow delete: if false;
+
+      // Founder bootstrap: only inside the batch that creates the business.
+      // `exists()` sees the pre-batch state, so once the business exists a
+      // founder whose membership was removed cannot re-add themselves.
+      function ownerBootstrap() {
+        let business = /databases/$(db)/documents/businesses/$(businessId);
+        return request.resource.data.role == 'owner'
+          && !exists(business)
+          && getAfter(business).data.owner_uid == uid();
+      }
+      // Invite acceptance: the invite is keyed by the caller's own (verified)
+      // email, and the role is copied from it — never chosen by the client.
+      function acceptsInvite() {
+        let invite = get(/databases/$(db)/documents/invites/$(myEmail())).data;
+        return emailVerified()
+          && invite.business_id == businessId
+          && invitableRole(invite.role)
+          && request.resource.data.role == invite.role;
+      }
+
+      match /members/{memberUid} {
+        allow read: if signedIn() && (memberUid == uid() || isMember(businessId));
+        allow create: if signedIn()
+          && memberUid == uid()
+          && request.resource.data.keys().hasOnly(['role', 'email', 'created_at'])
+          && request.resource.data.email == myEmail()
+          && (ownerBootstrap() || acceptsInvite());
+        // Nobody changes their own role or removes themselves; granting or
+        // revoking owner, or touching an owner, takes an owner.
+        allow update: if signedIn()
+          && memberUid != uid()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role'])
+          && (request.resource.data.role == 'owner' || invitableRole(request.resource.data.role))
+          && (
+            ((resource.data.role == 'owner' || request.resource.data.role == 'owner') && isOwner(businessId))
+            || (resource.data.role != 'owner' && request.resource.data.role != 'owner' && isAdmin(businessId))
+          );
+        allow delete: if signedIn()
+          && memberUid != uid()
+          && ((resource.data.role == 'owner' && isOwner(businessId))
+            || (resource.data.role != 'owner' && isAdmin(businessId)));
+      }
+    }
+
+    // Keyed by lowercased email so the invitee can get() their own invite
+    // without any query permission.
+    function validInvite(email) {
+      return signedIn()
+        && email == email.lower()
+        && request.resource.data.keys().hasOnly(['business_id', 'role', 'invited_by', 'created_at'])
+        && request.resource.data.invited_by == uid()
+        && invitableRole(request.resource.data.role);
+    }
+
+    match /invites/{email} {
+      allow read: if signedIn() && (email == myEmail() || isAdmin(resource.data.business_id));
+      allow create: if validInvite(email) && isAdmin(request.resource.data.business_id);
+      // One pending invite per email: another business cannot take it over.
+      allow update: if validInvite(email)
+        && isAdmin(resource.data.business_id)
+        && request.resource.data.business_id == resource.data.business_id;
+      allow delete: if signedIn() && (email == myEmail() || isAdmin(resource.data.business_id));
+    }
+
+    // Written once. Replacing it would make every existing backup undecryptable.
+    match /business_backup_keys/{businessId} {
+      allow read: if isMember(businessId);
+      allow create: if isAdmin(businessId)
+        && request.resource.data.keys().hasOnly(['key', 'created_at'])
+        && request.resource.data.key is string;
+      allow update, delete: if false;
+    }
+
+    // Hint only — lying here gains nothing, every real access checks members.
+    match /employee_business_map/{memberUid} {
+      allow read, delete: if signedIn() && memberUid == uid();
+      allow create, update: if signedIn()
+        && memberUid == uid()
+        && request.resource.data.keys().hasOnly(['business_id'])
+        && request.resource.data.business_id is string;
+    }
+
+    // Everything else is closed by default.
+  }
+}

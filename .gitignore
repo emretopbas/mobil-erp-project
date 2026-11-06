@@ -41,3 +41,16 @@ example
 # generated native folders
 /ios
 /android
+
+# firebase emulator logs
+firebase-debug.log
+firestore-debug.log
+storage-debug.log
+ui-debug.log
+
+# local tooling / generated
+graphify-out/
+.vscode/
+
+# Firebase Android config: kept out of this public repo; copy it in from the Firebase console
+google-services.json

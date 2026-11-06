@@ -11,6 +11,8 @@
       "icon": "./assets/expo.icon"
     },
     "android": {
+      "package": "com.emretopbas.erp",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -31,6 +33,21 @@
           "backgroundColor": "#208AEF",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
+        }
+      ],
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth",
+      [
+        "@react-native-firebase/messaging",
+        {
+          "android_notification_icon": "./assets/images/icon.png"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Ürün varyantı fotoğrafı seçmek için galeriye erişim gerekiyor.",
+          "cameraPermission": "Ürün varyantı fotoğrafı çekmek için kameraya erişim gerekiyor."
         }
       ]
     ],

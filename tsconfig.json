@@ -2,6 +2,18 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true,
+    // Explicit instead of relying on TS's automatic "include every package
+    // under node_modules/@types" default — that default wasn't picking up
+    // node:test/node:assert's ambient module declarations here (root cause
+    // not fully diagnosed; explicit `types` is the standard, documented fix
+    // and doesn't affect RN/React types, which come from direct package
+    // imports, not the ambient types-root scan).
+    "types": ["node"],
+    // Only the *.test.ts files under src/services use explicit ".ts" import
+    // extensions (needed for them to run directly under `node --test`,
+    // since Metro's bundler-aware resolver isn't in the loop there) — safe
+    // to enable project-wide since noEmit is already on.
+    "allowImportingTsExtensions": true,
     "paths": {
       "@/*": [
         "./src/*"

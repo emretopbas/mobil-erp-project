@@ -1,0 +1,40 @@
+rules_version = '2';
+
+// Encrypted SQLite backups (BackupService.ts). Access follows the same
+// membership document firestore.rules uses — businesses/{id}/members/{uid} —
+// read here through cross-service rules. The first deploy asks to grant the
+// Storage service agent read access to Firestore; accept it.
+//
+// Each firestore.exists()/get() below is billed as a Firestore read: about one
+// per backup upload and one per restore listing. Negligible at this volume.
+//
+// Deploy together with firestore.rules — see the note there on ordering.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function memberDoc(businessId) {
+      return /databases/(default)/documents/businesses/$(businessId)/members/$(request.auth.uid);
+    }
+    function isMember(businessId) {
+      return request.auth != null && firestore.exists(memberDoc(businessId));
+    }
+    function isAdmin(businessId) {
+      return isMember(businessId) && firestore.get(memberDoc(businessId)).data.role in ['owner', 'manager'];
+    }
+
+    // backups/{businessId}/<ISO-timestamp>.enc — under a fixed prefix, never
+    // at the bucket root, where a one-segment match would catch every path.
+    match /backups/{businessId}/{fileName} {
+      allow read: if isMember(businessId);
+      // Storage evaluates an upload over an existing object as `create`, not
+      // `update` — `resource == null` is what actually makes backups immutable.
+      allow create: if isAdmin(businessId)
+        && resource == null
+        && fileName.matches('[0-9TZ-]+[.]enc')
+        && request.resource.size < 200 * 1024 * 1024;
+      allow update, delete: if false;
+    }
+
+    // Everything else is closed by default.
+  }
+}
